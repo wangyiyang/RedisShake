@@ -1,4 +1,5 @@
 pkg
+bin
 .gopath
 .idea
 *.iml

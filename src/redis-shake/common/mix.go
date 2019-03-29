@@ -29,6 +29,7 @@ func WritePidById(id string, path string) error {
 	} else {
 		dir = path
 	}
+
 	pidfile := filepath.Join(dir, id) + ".pid"
 	if err := WritePid(pidfile); err != nil {
 		return err

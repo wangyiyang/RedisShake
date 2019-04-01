@@ -31,3 +31,4 @@ diagnostic/
 *.pid
 src/vendor/*
 !src/vendor/vendor.json
+src/github.com/

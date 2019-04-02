@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pkg/libs/atomic2"
@@ -346,11 +347,14 @@ func (cmd *CmdSync) SyncRDBFile(reader *bufio.Reader, target, auth_type, passwd 
 }
 
 func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd string) {
+	Begin:
 	c := utils.OpenRedisConnWithTimeout(target, auth_type, passwd, time.Duration(10)*time.Minute, time.Duration(10)*time.Minute)
 	defer c.Close()
-
+	isStop := sync.WaitGroup{}
+	isStop.Add(4)
 	cmd.sendBuf = make(chan cmdDetail, conf.Options.SenderCount)
 	cmd.delayChannel = make(chan *delayNode, conf.Options.SenderDelayChannelSize)
+	isError := false
 	var sendId, recvId atomic2.Int64
 
 	go func() {
@@ -358,6 +362,12 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			conf.Options.SourcePasswordRaw, time.Duration(10)*time.Minute, time.Duration(10)*time.Minute)
 		ticker := time.NewTicker(10 * time.Second)
 		for range ticker.C {
+			log.Infof("1 isError is:%s\t", isError)
+			if isError==true{
+				log.Info("Done 1")
+				isStop.Done()
+				return
+			}
 			offset, err := utils.GetFakeSlaveOffset(srcConn)
 			if err != nil {
 				// log.PurePrintf("%s\n", NewLogItem("GetFakeSlaveOffsetFail", "WARN", NewErrorLogDetail("", err.Error())))
@@ -388,6 +398,12 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 	go func() {
 		var node *delayNode
 		for {
+			log.Infof("2 isError is:%s\t", isError)
+			if isError==true{
+				log.Info("Done 2")
+				isStop.Done()
+				return
+			}
 			_, err := c.Receive()
 			if conf.Options.Metric == false {
 				continue
@@ -396,17 +412,25 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 
 			if err == nil {
 				// cmd.SyncStat.SuccessCmdCount.Incr()
+				log.Infof("2 isError is:%s\t", 1)
 				metric.MetricVar.AddSuccessCmdCount(1)
 			} else {
 				// cmd.SyncStat.FailCmdCount.Incr()
 				metric.MetricVar.AddFailCmdCount(1)
 				if utils.CheckHandleNetError(err) {
 					// log.PurePrintf("%s\n", NewLogItem("NetErrorWhileReceive", "ERROR", NewErrorLogDetail("", err.Error())))
-					log.Panicf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
+					log.Errorf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
+					isError=true
+					isStop.Done()
+					return
 				} else {
 					// log.PurePrintf("%s\n", NewLogItem("ErrorReply", "ERROR", NewErrorLogDetail("", err.Error())))
-					log.Panicf("Event:ErrorReply\tId:%s\tCommand: [unknown]\tError: %s",
+					log.Errorf("Event:ErrorReply\tId:%s\tCommand: [unknown]\tError: %s",
 						conf.Options.Id, err.Error())
+					isStop.Done()
+					isError=true
+					log.Infof("2 isError is:%s\t", isError)
+					return
 				}
 			}
 
@@ -447,12 +471,20 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		log.Infof("Event:IncrSyncStart\tId:%s\t", conf.Options.Id)
 
 		for {
+			log.Infof("3 isError is:%s\t", isError)
+			if isError==true{
+				log.Info("Done 3")
+				isStop.Done()
+				return
+			}
 			ignorecmd := false
 			isselect = false
 			resp := redis.MustDecodeOpt(decoder)
 
 			if scmd, argv, err = redis.ParseArgs(resp); err != nil {
-				log.PanicError(err, "parse command arguments failed")
+				log.Errorf( "parse command arguments failed",err)
+				isError=true
+				return
 			} else {
 				// cmd.SyncStat.PullCmdCount.Incr()
 				metric.MetricVar.AddPullCmdCount(1)
@@ -518,8 +550,13 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 	go func() {
 		var noFlushCount uint
 		var cachedSize uint64
-
 		for item := range cmd.sendBuf {
+			log.Infof("4 isError is:%s\t", isError)
+			if isError==true{
+				log.Info("Done 4")
+				isStop.Done()
+				return
+			}
 			length := len(item.Cmd)
 			data := make([]interface{}, len(item.Args))
 			for i := range item.Args {
@@ -552,13 +589,23 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 				cachedSize = 0
 				if utils.CheckHandleNetError(err) {
 					// log.PurePrintf("%s\n", NewLogItem("NetErrorWhileFlush", "ERROR", NewErrorLogDetail("", err.Error())))
-					log.Panicf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
+					log.Errorf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
+					isError=true
+					isStop.Done()
+					log.Infof("4 isError is:%s\t", isError)
+					return
 				}
 			}
 		}
 	}()
 
 	for lstat := cmd.Stat(); ; {
+		if isError==true{
+			log.Info("isError==true")
+			isStop.Wait()
+			log.Info("goto")
+			goto Begin
+		}
 		time.Sleep(time.Second)
 		nstat := cmd.Stat()
 		var b bytes.Buffer

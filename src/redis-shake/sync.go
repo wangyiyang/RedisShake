@@ -20,8 +20,8 @@ import (
 	"pkg/redis"
 	"redis-shake/base"
 	"redis-shake/command"
-	utils "redis-shake/common"
-	conf "redis-shake/configure"
+	"redis-shake/common"
+	"redis-shake/configure"
 	"redis-shake/heartbeat"
 	"redis-shake/metric"
 )
@@ -387,7 +387,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 
 	go func() {
 		var node *delayNode
-		var errStartTime int64
 		for {
 			_, err := c.Receive()
 			if conf.Options.Metric == false {
@@ -397,29 +396,13 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 
 			if err == nil {
 				// cmd.SyncStat.SuccessCmdCount.Incr()
-				if errStartTime != 0 {
-					errStartTime = 0
-				}
 				metric.MetricVar.AddSuccessCmdCount(1)
 			} else {
 				// cmd.SyncStat.FailCmdCount.Incr()
 				metric.MetricVar.AddFailCmdCount(1)
 				if utils.CheckHandleNetError(err) {
-					if conf.Options.RedisConnectTTL == 0 {
-						log.Panicf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
-					} else {
-						if errStartTime == 0 {
-							errStartTime = time.Now().Unix()
-							time.Sleep(time.Duration(conf.Options.RedisConnectTTL/10) * time.Second)
-							continue
-						} else if time.Now().Unix()-errStartTime >= conf.Options.RedisConnectTTL {
-							log.Panicf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
-						} else if time.Now().Unix()-errStartTime < conf.Options.RedisConnectTTL {
-							log.Error("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
-							time.Sleep(time.Duration(conf.Options.RedisConnectTTL/10) * time.Second)
-							continue
-						}
-					}
+					// log.PurePrintf("%s\n", NewLogItem("NetErrorWhileReceive", "ERROR", NewErrorLogDetail("", err.Error())))
+					log.Panicf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
 				} else {
 					// log.PurePrintf("%s\n", NewLogItem("ErrorReply", "ERROR", NewErrorLogDetail("", err.Error())))
 					log.Panicf("Event:ErrorReply\tId:%s\tCommand: [unknown]\tError: %s",
@@ -457,8 +440,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		var scmd string
 		var argv, new_argv [][]byte
 		var err error
-		var resp redis.Resp
-		var errStartTime int64
 
 		decoder := redis.NewDecoder(reader)
 
@@ -468,25 +449,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		for {
 			ignorecmd := false
 			isselect = false
-			resp, err = redis.MustDecodeOpt(decoder)
-			if err != nil {
-				if conf.Options.RedisConnectTTL == 0 {
-					log.PanicError(err, "decode redis resp failed")
-				} else if errStartTime == 0 {
-					errStartTime = time.Now().Unix()
-					log.Error(err, "decode redis resp failed")
-					time.Sleep(time.Duration(conf.Options.RedisConnectTTL/10) * time.Second)
-					continue
-				} else if errStartTime-time.Now().Unix() > conf.Options.RedisConnectTTL {
-					log.PanicError(err, "decode redis resp failed")
-				} else {
-					log.Error(err, "decode redis resp failed")
-					time.Sleep(time.Duration(conf.Options.RedisConnectTTL/10) * time.Second)
-					continue
-				}
-			} else if errStartTime != 0 {
-				errStartTime = 0
-			}
+			resp := redis.MustDecodeOpt(decoder)
 
 			if scmd, argv, err = redis.ParseArgs(resp); err != nil {
 				log.PanicError(err, "parse command arguments failed")
@@ -555,7 +518,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 	go func() {
 		var noFlushCount uint
 		var cachedSize uint64
-		var errStartTime int64
+
 		for item := range cmd.sendBuf {
 			length := len(item.Cmd)
 			data := make([]interface{}, len(item.Args))
@@ -588,25 +551,8 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 				noFlushCount = 0
 				cachedSize = 0
 				if utils.CheckHandleNetError(err) {
-					if err != nil {
-						if conf.Options.RedisConnectTTL == 0 {
-							log.Panicf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
-						} else if errStartTime == 0 {
-							errStartTime = time.Now().Unix()
-							log.Errorf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
-							time.Sleep(time.Duration(conf.Options.RedisConnectTTL/10) * time.Second)
-							continue
-						} else if errStartTime-time.Now().Unix() > conf.Options.RedisConnectTTL {
-							log.Panicf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
-						} else {
-							log.Errorf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
-							time.Sleep(time.Duration(conf.Options.RedisConnectTTL/10) * time.Second)
-							continue
-						}
-					}
-				}
-				if errStartTime != 0 || err == nil {
-					errStartTime = 0
+					// log.PurePrintf("%s\n", NewLogItem("NetErrorWhileFlush", "ERROR", NewErrorLogDetail("", err.Error())))
+					log.Panicf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
 				}
 			}
 		}

@@ -32,8 +32,12 @@ func Decode(r *bufio.Reader) (Resp, error) {
 	return d.decodeResp(0)
 }
 
-func MustDecodeOpt(d *Decoder) (Resp, error) {
-	return d.decodeResp(0)
+func MustDecodeOpt(d *Decoder) Resp {
+	resp, err := d.decodeResp(0)
+	if err != nil {
+		log.PanicError(err, "decode redis resp failed")
+	}
+	return resp
 }
 
 func MustDecode(r *bufio.Reader) Resp {

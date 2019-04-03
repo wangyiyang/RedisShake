@@ -347,6 +347,7 @@ func (cmd *CmdSync) SyncRDBFile(reader *bufio.Reader, target, auth_type, passwd 
 }
 
 func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd string) {
+	errTimes := 0
 	Begin:
 	c := utils.OpenRedisConnWithTimeout(target, auth_type, passwd, time.Duration(10)*time.Minute, time.Duration(10)*time.Minute)
 	defer c.Close()
@@ -362,7 +363,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			conf.Options.SourcePasswordRaw, time.Duration(10)*time.Minute, time.Duration(10)*time.Minute)
 		ticker := time.NewTicker(10 * time.Second)
 		for range ticker.C {
-			log.Infof("1 isError is:%s\t", isError)
 			if isError==true{
 				log.Info("Done 1")
 				isStop.Done()
@@ -398,9 +398,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 	go func() {
 		var node *delayNode
 		for {
-			log.Infof("2 isError is:%s\t", isError)
 			if isError==true{
-				log.Info("Done 2")
 				isStop.Done()
 				return
 			}
@@ -412,7 +410,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 
 			if err == nil {
 				// cmd.SyncStat.SuccessCmdCount.Incr()
-				log.Infof("2 isError is:%s\t", 1)
 				metric.MetricVar.AddSuccessCmdCount(1)
 			} else {
 				// cmd.SyncStat.FailCmdCount.Incr()
@@ -429,7 +426,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 						conf.Options.Id, err.Error())
 					isStop.Done()
 					isError=true
-					log.Infof("2 isError is:%s\t", isError)
 					return
 				}
 			}
@@ -471,9 +467,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		log.Infof("Event:IncrSyncStart\tId:%s\t", conf.Options.Id)
 
 		for {
-			log.Infof("3 isError is:%s\t", isError)
 			if isError==true{
-				log.Info("Done 3")
 				isStop.Done()
 				return
 			}
@@ -551,7 +545,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		var noFlushCount uint
 		var cachedSize uint64
 		for item := range cmd.sendBuf {
-			log.Infof("4 isError is:%s\t", isError)
 			if isError==true{
 				log.Info("Done 4")
 				isStop.Done()
@@ -592,7 +585,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 					log.Errorf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
 					isError=true
 					isStop.Done()
-					log.Infof("4 isError is:%s\t", isError)
 					return
 				}
 			}
@@ -601,10 +593,17 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 
 	for lstat := cmd.Stat(); ; {
 		if isError==true{
-			log.Info("isError==true")
 			isStop.Wait()
-			log.Info("goto")
+			errTimes++
+			errSleepTime :=errTimes
+			if errSleepTime > 10 {
+				errSleepTime = 10
+			}
+			log.Errorf("Event: EOF error, err times:%d\tsleep %ds",errTimes, errSleepTime)
+			time.Sleep(time.Duration(errSleepTime)*time.Second)
 			goto Begin
+		}else if errTimes != 0 {
+			errTimes = 0
 		}
 		time.Sleep(time.Second)
 		nstat := cmd.Stat()

@@ -593,6 +593,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 
 	for lstat := cmd.Stat(); ; {
 		if isError==true{
+			base.Status = "error"
 			isStop.Wait()
 			errTimes++
 			errSleepTime :=errTimes
@@ -603,6 +604,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			time.Sleep(time.Duration(errSleepTime)*time.Second)
 			goto Begin
 		}else if errTimes != 0 {
+			base.Status = "incr"
 			errTimes = 0
 		}
 		time.Sleep(time.Second)

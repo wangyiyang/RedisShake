@@ -559,7 +559,10 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			err := c.Send(item.Cmd, data...)
 			if err != nil {
 				// log.PurePrintf("%s\n", NewLogItem("SendToTargetFail", "ERROR", NewErrorLogDetail("", err.Error())))
-				log.Panicf("Event:SendToTargetFail\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
+				log.Errorf("Event:SendToTargetFail\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
+				isError=true
+				isStop.Done()
+				return
 			}
 			noFlushCount += 1
 

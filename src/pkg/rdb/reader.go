@@ -35,15 +35,10 @@ const (
 	RdbTypeQuicklist       = 14
 	RDBTypeStreamListPacks = 15 // stream
 
-<<<<<<< HEAD
-	rdbFlagOnlyValue = 0xf9
-	rdbFlagAUX       = 0xfa
-=======
 	rdbFlagModuleAux = 0xf7
 	rdbFlagIdle      = 0xf8
 	rdbFlagFreq      = 0xf9
 	RdbFlagAUX       = 0xfa
->>>>>>> 71a91845532b929f0ce9afff2eaedb09f4c6c90c
 	rdbFlagResizeDB  = 0xfb
 	rdbFlagExpiryMS  = 0xfc
 	rdbFlagExpiry    = 0xfd
@@ -113,7 +108,7 @@ func (r *rdbReader) readObjectValue(t byte, l *Loader) ([]byte, error) {
 	switch t {
 	default:
 		return nil, errors.Errorf("unknown object-type %02x", t)
-	case rdbFlagAUX:
+	case RdbFlagAUX:
 		fallthrough
 	case rdbFlagResizeDB:
 		fallthrough

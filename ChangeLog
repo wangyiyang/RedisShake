@@ -13,13 +13,8 @@
 	* VERSION: 1.2.1
 	* IMPROVE: support syncing lua script in RDB syncing.
 2019-03-11 Alibaba Cloud.
-<<<<<<< HEAD
-	* version: 1.2.0
-	* redis-shake: support 5.0.
-=======
 	* VERSION: 1.2.0
 	* FEATURE: support 5.0.
->>>>>>> cbb95bbf430529d0aa1b28c7ddce27a4af0428c4
 2019-02-21 Alibaba Cloud.
 	* VERSION: 1.0.0
 	* REDIS-SHAKE: initial release.

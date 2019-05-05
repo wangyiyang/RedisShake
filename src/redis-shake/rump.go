@@ -8,11 +8,7 @@ import (
 	"redis-shake/configure"
 
 	"github.com/garyburd/redigo/redis"
-)
-
-const (
-	TencentCluster = "tencent_cluster"
-	AliyunCluster  = "aliyun_cluster"
+	"redis-shake/scanner"
 )
 
 type CmdRump struct {
@@ -21,6 +17,8 @@ type CmdRump struct {
 
 	keyChan    chan *KeyNode // keyChan is used to communicated between routine1 and routine2
 	resultChan chan *KeyNode // resultChan is used to communicated between routine2 and routine3
+
+	scanner scanner.Scanner
 }
 
 type KeyNode struct {
@@ -44,6 +42,8 @@ func (cr *CmdRump) Main() {
 	cr.keyChan = make(chan *KeyNode, conf.Options.ScanKeyNumber)
 	cr.resultChan = make(chan *KeyNode, conf.Options.ScanKeyNumber)
 
+	cr.scanner = scanner.NewScanner(cr.sourceConn)
+
 	/*
 	 * we start 3 routines to run:
 	 * 1. fetch keys from the source redis
@@ -59,71 +59,51 @@ func (cr *CmdRump) Main() {
 }
 
 func (cr *CmdRump) fetcher() {
-	length := 1
-	if conf.Options.ScanSpecialCloud == TencentCluster {
-		length = len(conf.Options.ScanSpecialCloudTencentUrls)
-	} else if conf.Options.ScanSpecialCloud == AliyunCluster {
-		length = int(conf.Options.ScanSpecialCloudAliyunNodeNumber)
+	length, err := cr.scanner.NodeCount()
+	if err != nil || length <= 0 {
+		log.Panicf("fetch db node failed: length[%v], error[%v]", length, err)
 	}
+
+	log.Infof("start fetcher with special-cloud[%v], length[%v]", conf.Options.ScanSpecialCloud, length)
 
 	// iterate all source nodes
 	for i := 0; i < length; i++ {
-		var (
-			cursor int64
-			keys   []string
-			values []interface{}
-			err    error
-		)
-
 		// fetch data from on node
 		for {
-			switch conf.Options.ScanSpecialCloud {
-			case "":
-				values, err = redis.Values(cr.sourceConn.Do("SCAN", cursor, "COUNT",
-					conf.Options.ScanKeyNumber))
-			case TencentCluster:
-				values, err = redis.Values(cr.sourceConn.Do("SCAN", cursor, "COUNT",
-					conf.Options.ScanKeyNumber, conf.Options.ScanSpecialCloudTencentUrls[i]))
-			case AliyunCluster:
-				values, err = redis.Values(cr.sourceConn.Do("ISCAN", i, cursor, "COUNT",
-					conf.Options.ScanKeyNumber))
-			}
-			if err != nil && err != redis.ErrNil {
-				log.Panicf("scan with cursor[%v] failed[%v]", cursor, err)
-			}
-
-			values, err = redis.Scan(values, &cursor, &keys)
-			if err != nil && err != redis.ErrNil {
-				log.Panicf("do scan with cursor[%v] failed[%v]", cursor, err)
+			keys, err := cr.scanner.ScanKey(i)
+			if err != nil {
+				log.Panic(err)
 			}
 
 			log.Info("scaned keys: ", len(keys))
 
-			// pipeline dump
-			for _, key := range keys {
-				log.Debug("scan key: ", key)
-				cr.sourceConn.Send("DUMP", key)
-			}
-			dumps, err := redis.Strings(cr.sourceConn.Do(""))
-			if err != nil && err != redis.ErrNil {
-				log.Panicf("do dump with cursor[%v] failed[%v]", cursor, err)
-			}
+			if len(keys) != 0 {
+				// pipeline dump
+				for _, key := range keys {
+					log.Debug("scan key: ", key)
+					cr.sourceConn.Send("DUMP", key)
+				}
+				dumps, err := redis.Strings(cr.sourceConn.Do(""))
+				if err != nil && err != redis.ErrNil {
+					log.Panicf("do dump with failed[%v]", err)
+				}
 
-			// pipeline ttl
-			for _, key := range keys {
-				cr.sourceConn.Send("PTTL", key)
-			}
-			pttls, err := redis.Int64s(cr.sourceConn.Do(""))
-			if err != nil && err != redis.ErrNil {
-				log.Panicf("do ttl with cursor[%v] failed[%v]", cursor, err)
-			}
+				// pipeline ttl
+				for _, key := range keys {
+					cr.sourceConn.Send("PTTL", key)
+				}
+				pttls, err := redis.Int64s(cr.sourceConn.Do(""))
+				if err != nil && err != redis.ErrNil {
+					log.Panicf("do ttl with failed[%v]", err)
+				}
 
-			for i, k := range keys {
-				cr.keyChan <- &KeyNode{k, dumps[i], pttls[i]}
+				for i, k := range keys {
+					cr.keyChan <- &KeyNode{k, dumps[i], pttls[i]}
+				}
 			}
 
 			// Last iteration of scan.
-			if cursor == 0 {
+			if cr.scanner.EndNode() {
 				break
 			}
 		}

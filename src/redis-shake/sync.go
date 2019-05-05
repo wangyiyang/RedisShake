@@ -12,19 +12,19 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"pkg/libs/atomic2"
 	"pkg/libs/io/pipe"
 	"pkg/libs/log"
 	"pkg/redis"
-	"redis-shake/base"
-	"redis-shake/command"
 	"redis-shake/common"
 	"redis-shake/configure"
+	"redis-shake/command"
+	"redis-shake/base"
 	"redis-shake/heartbeat"
 	"redis-shake/metric"
+	"unsafe"
 )
 
 type delayNode struct {
@@ -49,7 +49,7 @@ type CmdSync struct {
 
 	// sending queue
 	sendBuf chan cmdDetail
-
+	
 	wait_full chan struct{}
 
 	status string
@@ -62,8 +62,8 @@ type cmdSyncStat struct {
 }
 
 type cmdDetail struct {
-	Cmd  string
-	Args [][]byte
+	Cmd       string
+	Args      [][]byte
 }
 
 func (c *cmdDetail) String() string {
@@ -275,7 +275,7 @@ func (cmd *CmdSync) PSyncPipeCopy(c net.Conn, br *bufio.Reader, bw *bufio.Writer
 }
 
 func (cmd *CmdSync) SyncRDBFile(reader *bufio.Reader, target, auth_type, passwd string, nsize int64) {
-	pipe := utils.NewRDBLoader(reader, &cmd.rbytes, conf.Options.Parallel*32)
+	pipe := utils.NewRDBLoader(reader, &cmd.rbytes, conf.Options.Parallel * 32)
 	wait := make(chan struct{})
 	go func() {
 		defer close(wait)
@@ -354,27 +354,23 @@ func (cmd *CmdSync) SyncRDBFile(reader *bufio.Reader, target, auth_type, passwd 
 }
 
 func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd string) {
-	errTimes := 0
-	Begin:
 	c := utils.OpenRedisConnWithTimeout(target, auth_type, passwd, time.Duration(10)*time.Minute, time.Duration(10)*time.Minute)
 	defer c.Close()
-	isStop := sync.WaitGroup{}
-	isStop.Add(4)
+
 	cmd.sendBuf = make(chan cmdDetail, conf.Options.SenderCount)
 	cmd.delayChannel = make(chan *delayNode, conf.Options.SenderDelayChannelSize)
-	isError := false
-	var sendId, recvId atomic2.Int64
+	var sendId, recvId, sendMarkId atomic2.Int64 // sendMarkId is also used as mark the sendId in sender routine
 
 	go func() {
+		if conf.Options.Psync == false {
+			log.Warn("GetFakeSlaveOffset not enable when psync == false")
+			return
+		}
+
 		srcConn := utils.OpenRedisConnWithTimeout(conf.Options.SourceAddress, conf.Options.SourceAuthType,
 			conf.Options.SourcePasswordRaw, time.Duration(10)*time.Minute, time.Duration(10)*time.Minute)
 		ticker := time.NewTicker(10 * time.Second)
 		for range ticker.C {
-			if isError==true{
-				log.Info("Done 1")
-				isStop.Done()
-				return
-			}
 			offset, err := utils.GetFakeSlaveOffset(srcConn)
 			if err != nil {
 				// log.PurePrintf("%s\n", NewLogItem("GetFakeSlaveOffsetFail", "WARN", NewErrorLogDetail("", err.Error())))
@@ -405,15 +401,17 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 	go func() {
 		var node *delayNode
 		for {
-			if isError==true{
-				isStop.Done()
-				return
-			}
-			_, err := c.Receive()
+			reply, err := c.Receive()
+
+			recvId.Incr()
+			id := recvId.Get() // receive id
+
+			// print debug log of receive reply
+			log.Debugf("receive reply[%v]: [%v], error: [%v]", id, reply, err)
+
 			if conf.Options.Metric == false {
 				continue
 			}
-			recvId.Incr()
 
 			if err == nil {
 				// cmd.SyncStat.SuccessCmdCount.Incr()
@@ -423,17 +421,11 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 				metric.MetricVar.AddFailCmdCount(1)
 				if utils.CheckHandleNetError(err) {
 					// log.PurePrintf("%s\n", NewLogItem("NetErrorWhileReceive", "ERROR", NewErrorLogDetail("", err.Error())))
-					log.Errorf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
-					isError=true
-					isStop.Done()
-					return
+					log.Panicf("Event:NetErrorWhileReceive\tId:%s\tError:%s", conf.Options.Id, err.Error())
 				} else {
 					// log.PurePrintf("%s\n", NewLogItem("ErrorReply", "ERROR", NewErrorLogDetail("", err.Error())))
-					log.Errorf("Event:ErrorReply\tId:%s\tCommand: [unknown]\tError: %s",
+					log.Panicf("Event:ErrorReply\tId:%s\tCommand: [unknown]\tError: %s",
 						conf.Options.Id, err.Error())
-					isStop.Done()
-					isError=true
-					return
 				}
 			}
 
@@ -447,7 +439,6 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			}
 
 			if node != nil {
-				id := recvId.Get() // receive id
 				if node.id == id {
 					// cmd.SyncStat.Delay.Add(time.Now().Sub(node.t).Nanoseconds())
 					metric.MetricVar.AddDelay(uint64(time.Now().Sub(node.t).Nanoseconds()) / 1000000) // ms
@@ -464,9 +455,9 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		var bypass bool = false
 		var isselect bool = false
 
-		var scmd string
-		var argv, new_argv [][]byte
-		var err error
+        var scmd string
+        var argv, new_argv [][]byte
+        var err error
 
 		decoder := redis.NewDecoder(reader)
 
@@ -474,21 +465,25 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 		log.Infof("Event:IncrSyncStart\tId:%s\t", conf.Options.Id)
 
 		for {
-			if isError==true{
-				isStop.Done()
-				return
-			}
 			ignorecmd := false
 			isselect = false
 			resp := redis.MustDecodeOpt(decoder)
 
 			if scmd, argv, err = redis.ParseArgs(resp); err != nil {
-				log.Errorf( "parse command arguments failed",err)
-				isError=true
-				return
+				log.PanicError(err, "parse command arguments failed")
 			} else {
 				// cmd.SyncStat.PullCmdCount.Incr()
 				metric.MetricVar.AddPullCmdCount(1)
+
+				// print debug log of send command
+				if conf.Options.LogLevel == utils.LogLevelAll {
+					strArgv := make([]string, len(argv))
+					for i, ele := range argv {
+						strArgv[i] = *(*string)(unsafe.Pointer(&ele))
+					}
+					sendMarkId.Incr()
+					log.Debugf("send command[%v]: [%s %v]", sendMarkId.Get(), scmd, strArgv)
+				}
 
 				if scmd != "ping" {
 					if strings.EqualFold(scmd, "select") {
@@ -552,12 +547,8 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 	go func() {
 		var noFlushCount uint
 		var cachedSize uint64
+
 		for item := range cmd.sendBuf {
-			if isError==true{
-				log.Info("Done 4")
-				isStop.Done()
-				return
-			}
 			length := len(item.Cmd)
 			data := make([]interface{}, len(item.Args))
 			for i := range item.Args {
@@ -567,10 +558,7 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			err := c.Send(item.Cmd, data...)
 			if err != nil {
 				// log.PurePrintf("%s\n", NewLogItem("SendToTargetFail", "ERROR", NewErrorLogDetail("", err.Error())))
-				log.Errorf("Event:SendToTargetFail\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
-				isError=true
-				isStop.Done()
-				return
+				log.Panicf("Event:SendToTargetFail\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
 			}
 			noFlushCount += 1
 
@@ -587,37 +575,19 @@ func (cmd *CmdSync) SyncCommand(reader *bufio.Reader, target, auth_type, passwd 
 			}
 
 			if noFlushCount > conf.Options.SenderCount || cachedSize > conf.Options.SenderSize ||
-				len(cmd.sendBuf) == 0 { // 5000 cmd in a batch
+					len(cmd.sendBuf) == 0 { // 5000 cmd in a batch
 				err := c.Flush()
 				noFlushCount = 0
 				cachedSize = 0
 				if utils.CheckHandleNetError(err) {
 					// log.PurePrintf("%s\n", NewLogItem("NetErrorWhileFlush", "ERROR", NewErrorLogDetail("", err.Error())))
-					log.Errorf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
-					isError=true
-					isStop.Done()
-					return
+					log.Panicf("Event:NetErrorWhileFlush\tId:%s\tError:%s\t", conf.Options.Id, err.Error())
 				}
 			}
 		}
 	}()
 
 	for lstat := cmd.Stat(); ; {
-		if isError==true{
-			base.Status = "error"
-			isStop.Wait()
-			errTimes++
-			errSleepTime :=errTimes
-			if errSleepTime > 10 {
-				errSleepTime = 10
-			}
-			log.Errorf("Event: EOF error, err times:%d\tsleep %ds",errTimes, errSleepTime)
-			time.Sleep(time.Duration(errSleepTime)*time.Second)
-			goto Begin
-		}else if errTimes != 0 {
-			base.Status = "incr"
-			errTimes = 0
-		}
 		time.Sleep(time.Second)
 		nstat := cmd.Stat()
 		var b bytes.Buffer
@@ -640,9 +610,9 @@ func (cmd *CmdSync) addDelayChan(id int64) {
 	 */
 	used := cap(cmd.delayChannel) - len(cmd.delayChannel)
 	if used >= 4096 ||
-		used >= 1024 && id%10 == 0 ||
-		used >= 128 && id%100 == 0 ||
-		id%1000 == 0 {
+			used >= 1024 && id % 10 == 0 ||
+			used >= 128 && id % 100 == 0 ||
+			id % 1000 == 0 {
 		// non-blocking add
 		select {
 		case cmd.delayChannel <- &delayNode{t: time.Now(), id: id}:

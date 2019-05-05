@@ -30,6 +30,7 @@ import (
 
 	"github.com/gugemichael/nimo4go"
 	logRotate "gopkg.in/natefinch/lumberjack.v2"
+	"redis-shake/scanner"
 )
 
 type Exit struct{ Code int }
@@ -54,7 +55,7 @@ func main() {
 
 	// argument options
 	configuration := flag.String("conf", "", "configuration path")
-	tp := flag.String("type", "", "run type: decode, restore, dump, sync")
+	tp := flag.String("type", "", "run type: decode, restore, dump, sync, rump")
 	version := flag.Bool("version", false, "show version")
 	flag.Parse()
 
@@ -230,17 +231,17 @@ func sanitizeOptions(tp string) error {
 	// set log level
 	var logDeepLevel log.LogLevel
 	switch conf.Options.LogLevel {
-	case "none":
+	case utils.LogLevelNone:
 		logDeepLevel = log.LEVEL_NONE
-	case "error":
+	case utils.LogLevelError:
 		logDeepLevel = log.LEVEL_ERROR
-	case "warn":
+	case utils.LogLevelWarn:
 		logDeepLevel = log.LEVEL_WARN
 	case "":
 		fallthrough
-	case "info":
+	case utils.LogLevelInfo:
 		logDeepLevel = log.LEVEL_INFO
-	case "all":
+	case utils.LogLevelAll:
 		logDeepLevel = log.LEVEL_DEBUG
 	default:
 		return fmt.Errorf("invalid log level[%v]", conf.Options.LogLevel)
@@ -353,18 +354,14 @@ func sanitizeOptions(tp string) error {
 			conf.Options.ScanKeyNumber = 100
 		}
 
-		if conf.Options.ScanSpecialCloud == run.TencentCluster {
-			if len(conf.Options.ScanSpecialCloudTencentUrls) == 0 {
-				return fmt.Errorf("`scan.special_cloud.tencent.urls` shouldn't be empty when " +
-					"`scan.special_cloud` is [%s]", run.TencentCluster)
-			}
-		} else if conf.Options.ScanSpecialCloud == run.AliyunCluster {
-			if conf.Options.ScanSpecialCloudAliyunNodeNumber == 0 {
-				return fmt.Errorf("`scan.special_cloud.aliyun.node_number` shouldn't be 0 when " +
-					"`scan.special_cloud` is [%s]", run.AliyunCluster)
-			}
-		} else if conf.Options.ScanSpecialCloud != "" {
+		if conf.Options.ScanSpecialCloud != "" && conf.Options.ScanSpecialCloud != scanner.TencentCluster &&
+				conf.Options.ScanSpecialCloud != scanner.AliyunCluster {
 			return fmt.Errorf("special cloud type[%s] is not supported", conf.Options.ScanSpecialCloud)
+		}
+
+		if conf.Options.ScanSpecialCloud != "" && conf.Options.ScanKeyFile != "" {
+			return fmt.Errorf("scan.special_cloud[%v] and scan.key_file[%v] cann't be given at the same time",
+				conf.Options.ScanSpecialCloud, conf.Options.ScanKeyFile)
 		}
 	}
 

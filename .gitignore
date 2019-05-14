@@ -15,7 +15,6 @@ logs
 tags
 result.db.*
 bin/*
-!/bin/redis-shake.*
 conf/*
 !conf/redis-shake.conf
 

@@ -17,6 +17,7 @@ result.db.*
 bin/*
 conf/*
 !conf/redis-shake.conf
+!.circleci/config.yml
 
 dump.data
 runtime.trace
